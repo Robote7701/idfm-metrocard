@@ -1,8 +1,10 @@
 # IDFM Metrocard 🚇
 
-Carte Home Assistant façon **panneau de quai** qui affiche les 2 prochains passages d'un arrêt d'Île-de-France (métro, RER, Transilien, tram, bus) : le temps d'attente en gros, l'heure de passage dessous, les destinations et l'alerte trafic.
+Carte Home Assistant façon **panneau de quai** qui affiche les 2 prochains passages d'un arrêt d'Île-de-France (métro, RER, Transilien, tram, bus) : le temps d'attente en gros, l'heure de passage dessous, les destinations et l'**état du trafic** d'un coup d'œil. Une ou plusieurs lignes par carte.
 
 ![Aperçu](images/preview.png)
+
+![Info trafic et plusieurs lignes (v1.1)](images/preview-v1.1.png)
 
 > 🇬🇧 [English version below](#-english)
 
@@ -27,7 +29,7 @@ Chaque arrêt ajouté dans l'intégration crée **un appareil** avec ces entité
 | Entité | Exemple | Utilisation dans la carte |
 |---|---|---|
 | Capteurs d'horaires `sensor.…_0` à `sensor.…_N` (*device_class* `timestamp`) | `sensor.c_athis_mons_athis_mons_any_idfm_athis_mons_athis_mons_any_0` | **État** = heure de passage. **Attributs** lus : `destination`, `direction`, `status` (`onTime`, `delayed`, `cancelled`…), `at_stop` (train à quai) |
-| Info trafic `binary_sensor.…` (*device_class* `problem`) | `binary_sensor.c_athis_mons_athis_mons_any_idfm_c_athis_mons_athis_mons` | `on` = perturbation → alerte dans l'encart ; un appui ouvre le détail (attribut `description`) |
+| Info trafic `binary_sensor.…` (*device_class* `problem`) | `binary_sensor.c_athis_mons_athis_mons_any_idfm_c_athis_mons_athis_mons` | `on` = perturbation. Attributs lus : `effect` et `cause` (→ pastille d'état), `description` (→ bandeau défilant, et texte complet au toucher), `end_time` (→ « jusqu'à … ») |
 | `calendar.…` | | Non utilisé |
 
 Il suffit de choisir **l'appareil** : la carte retrouve toute seule ses capteurs, le numéro de ligne et le nom de l'arrêt.
@@ -79,6 +81,10 @@ exclude_destinations:
 | `show_info` | booléen | `true` | Affiche l'encart info bleu. |
 | `show_traffic` | booléen | `true` | Affiche l'alerte trafic. |
 | `show_clock` | booléen | `true` | Affiche l'horloge dans l'encart. |
+| `show_status` | booléen | `true` | Affiche la pastille d'état du trafic dans le bandeau. |
+| `show_ticker` | booléen | `true` | Affiche le bandeau défilant avec le message de perturbation. |
+| `only_my_stop` | booléen | `false` | Pastille grise « Info ligne » si le message ne cite ni ton arrêt ni tes `include_destinations` (voir Limites). |
+| `lines` | liste | — | Plusieurs lignes dans une même carte (voir plus bas). |
 
 ### Exemple : les deux sens d'un trajet domicile ↔ travail
 
@@ -97,11 +103,32 @@ Un appareil par gare (direction `any`), et le tri du sens se fait dans la carte 
   include_destinations: [Juvisy, Brétigny, Dourdan, Étampes]
 ```
 
+### Plusieurs lignes dans une même carte
+
+Avec `lines`, chaque ligne devient une rangée du panneau (2 prochains départs + pastille d'état), et les messages de perturbation de toutes les lignes défilent dans le même bandeau. Chaque entrée accepte les mêmes options qu'une carte simple (`device`, `title`, `subtitle`, `include_destinations`, `exclude_destinations`, `mode`, `line_color`…).
+
+```yaml
+type: custom:idfm-metrocard
+title: Mon trajet
+lines:
+  - device: <appareil RER C à Athis-Mons>
+    title: Paris · BFM
+    exclude_destinations: [Juvisy, Brétigny, Dourdan, Étampes]
+  - device: <appareil métro 14 à Bibliothèque François Mitterrand>
+    title: Saint-Denis Pleyel
+    subtitle: depuis BFM
+    include_destinations: [Pleyel]
+```
+
+ℹ️ La carte multi-lignes se règle dans l'éditeur YAML (l'éditeur visuel gère la carte à une ligne).
+
 ## 🖥️ Ce que montre la carte
 
 - **Gros chiffre jaune** : minutes avant le départ, avec l'**heure de passage** dessous. « retard » s'affiche en orange si l'exploitant le signale.
 - **À quai** / **Proche** clignote quand le train est là ou part dans la minute.
-- **Encart info** : horloge, destination des 2 départs, nombre de départs supprimés, alerte trafic (appuie dessus pour lire le détail).
+- **Pastille d'état** dans le bandeau : 🟢 Trafic normal · 🟡 Travaux · 🟠 Retards / Trafic modifié / Trafic réduit / Perturbé · 🔴 Interrompu / Grève. Appuie dessus pour lire le message complet.
+- **Bandeau défilant** façon afficheur : le résumé du message de perturbation et sa fin prévue (« jusqu'à 23:50 »).
+- **Encart info** : horloge, destination des 2 départs, nombre de départs supprimés.
 - **Sur téléphone** (moins de 430 px de large), l'encart passe sous les chiffres.
 
 ## ⚠️ Limites
@@ -109,6 +136,8 @@ Un appareil par gare (direction `any`), et le tri du sens se fait dans la carte 
 - La carte dépend des données temps réel de PRIM : sur certaines lignes ou certains arrêts, ce sont des horaires théoriques.
 - Le **type de ligne** est deviné d'après son nom (A à E = RER, H/J/K/L/N/P/R/U = Transilien, T… = tram, 1 à 18 = métro, sinon bus). Force `mode` si ça se trompe (ex. un bus numéroté 8).
 - **Couleurs fournies** : métro, RER et Transilien. Pour les trams et les bus, règle `line_color`.
+- **Info trafic à l'échelle de la ligne** : IDFM publie ses messages pour toute la ligne, donc une perturbation loin de chez toi peut passer la pastille en orange. L'option `only_my_stop` atténue ça, mais elle se base sur les noms cités dans le message : « interrompu entre Juvisy et Austerlitz » ne cite pas les gares intermédiaires et serait mis en gris à tort. Elle est donc désactivée par défaut.
+- La **Grève** est repérée par les mots « grève » ou « mouvement social » dans le message.
 
 ## 🔀 Alternatives
 
@@ -156,7 +185,22 @@ title: Paris · BFM
 exclude_destinations: [Juvisy, Brétigny, Dourdan, Étampes]
 ```
 
-Options: `device`* / `entities`, `title`, `subtitle`, `include_destinations`, `exclude_destinations`, `mode` (`auto`, `metro`, `rer`, `train`, `tram`, `bus`), `line`, `line_color`, `traffic_entity`, `show_info`, `show_traffic`, `show_clock` (see the table above). The card is in English when your Home Assistant is set to English.
+Options: `device`* / `entities`, `title`, `subtitle`, `include_destinations`, `exclude_destinations`, `mode` (`auto`, `metro`, `rer`, `train`, `tram`, `bus`), `line`, `line_color`, `traffic_entity`, `show_info`, `show_traffic`, `show_clock`, `show_status`, `show_ticker`, `only_my_stop`, `lines` (see the table above). The card is in English when your Home Assistant is set to English.
+
+**Traffic status (v1.1):** a status pill (good service / works / delays / suspended / strike…) built from the traffic sensor's `effect`, `cause` and `description`, plus a scrolling banner with the disruption summary and its end time. Messages are line-wide, so a disruption far from your stop still shows; `only_my_stop` greys it out when your stop isn't mentioned (off by default, as it can miss stations between two named ones).
+
+**Several lines in one card:** use `lines:` (YAML only), each entry taking the same options as a single card:
+
+```yaml
+type: custom:idfm-metrocard
+title: My commute
+lines:
+  - device: <RER C device>
+    title: Paris · BFM
+    exclude_destinations: [Juvisy, Brétigny, Dourdan, Étampes]
+  - device: <metro 14 device>
+    title: Saint-Denis Pleyel
+```
 
 ### Alternatives
 - **[lovelace-idf-mobilite](https://github.com/yyrkoon94/lovelace-idf-mobilite)** (yyrkoon94): full departure board, TV mode, line filters, visual editor; uses its own integration (IDF Mobilité Assistant) or REST sensors.

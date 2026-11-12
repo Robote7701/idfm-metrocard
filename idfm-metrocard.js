@@ -4,7 +4,7 @@
  * (https://github.com/droso-hass/idfm).
  * Licence MIT.
  */
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const CARD_TAG = 'idfm-metrocard';
 const EDITOR_TAG = 'idfm-metrocard-editor';
 
@@ -22,6 +22,7 @@ const LINE_COLORS = {
   },
 };
 const DEFAULT_COLOR = { metro: '#9a9a9a', rer: '#9a9a9a', train: '#9a9a9a', tram: '#2E8B57', bus: '#3B6BB5' };
+const LEVEL_COLORS = { ok: '#2e9d4f', info: '#7b8794', works: '#e0b000', warn: '#ef7d00', bad: '#d7261e' };
 
 const I18N = {
   fr: {
@@ -30,7 +31,12 @@ const I18N = {
     min: 'min', atStop: 'À quai', soon: 'Proche', none: 'Aucun départ annoncé pour l\'instant',
     late: 'retard', cancelled: (n) => `${n} départ${n > 1 ? 's' : ''} supprimé${n > 1 ? 's' : ''}`,
     traffic: '⚠ Trafic perturbé · détails', from: 'depuis', noDevice: 'Appareil IDFM introuvable : choisis-le dans l\'éditeur de la carte.',
-    noSensor: 'Aucun capteur d\'horaire trouvé pour cet appareil.',
+    noSensor: 'Aucun capteur d\'horaire trouvé pour cet appareil.', next: 'Prochains départs',
+    status: {
+      ok: 'Trafic normal', strike: 'Grève', stopped: 'Interrompu', reduced: 'Trafic réduit', delays: 'Retards',
+      modified: 'Trafic modifié', works: 'Travaux', disrupted: 'Perturbé', elsewhere: 'Info ligne',
+    },
+    until: (t, sameDay) => (sameDay ? `jusqu'à ${t}` : `jusqu'au ${t}`),
   },
   en: {
     nth: ['1<sup>st</sup>', '2<sup>nd</sup>'],
@@ -38,34 +44,12 @@ const I18N = {
     min: 'min', atStop: 'At platform', soon: 'Arriving', none: 'No departure announced yet',
     late: 'delayed', cancelled: (n) => `${n} departure${n > 1 ? 's' : ''} cancelled`,
     traffic: '⚠ Service disruption · details', from: 'from', noDevice: 'IDFM device not found: pick it in the card editor.',
-    noSensor: 'No departure sensor found for this device.',
-  },
-};
-
-const EDITOR_LABELS = {
-  fr: {
-    device: 'Arrêt (appareil IDFM)', title: 'Titre (destination affichée)', subtitle: 'Sous-titre',
-    include_destinations: 'Garder seulement les départs vers…', exclude_destinations: 'Exclure les départs vers…',
-    mode: 'Type de ligne', line_color: 'Couleur de ligne (#RRVVBB)', show_info: 'Encart info',
-    show_traffic: 'Alerte trafic', show_clock: 'Horloge',
-  },
-  en: {
-    device: 'Stop (IDFM device)', title: 'Title (shown destination)', subtitle: 'Subtitle',
-    include_destinations: 'Only keep departures to…', exclude_destinations: 'Exclude departures to…',
-    mode: 'Line type', line_color: 'Line colour (#RRGGBB)', show_info: 'Info panel',
-    show_traffic: 'Traffic alert', show_clock: 'Clock',
-  },
-};
-const EDITOR_HELPERS = {
-  fr: {
-    include_destinations: 'Un bout de nom suffit (ex. « Juvisy »). Vide = tous.',
-    exclude_destinations: 'Ex. les terminus de l\'autre sens.',
-    title: 'Vide = direction de l\'intégration ou nom de l\'arrêt.',
-  },
-  en: {
-    include_destinations: 'Part of a name is enough (e.g. “Juvisy”). Empty = all.',
-    exclude_destinations: 'E.g. the terminus stations of the other direction.',
-    title: 'Empty = integration direction or stop name.',
+    noSensor: 'No departure sensor found for this device.', next: 'Next departures',
+    status: {
+      ok: 'Good service', strike: 'Strike', stopped: 'Suspended', reduced: 'Reduced service', delays: 'Delays',
+      modified: 'Modified service', works: 'Works', disrupted: 'Disrupted', elsewhere: 'Line info',
+    },
+    until: (t) => `until ${t}`,
   },
 };
 
@@ -92,6 +76,19 @@ function textColorFor(hex) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.35 ? '#1d1d1b' : '#ffffff';
 }
 
+// Résumé court d'un message IDFM : 1re phrase + motif.
+function summarize(desc) {
+  const text = String(desc || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  const motif = (text.match(/Motif\s*:\s*([^.]+)/i) || [])[1];
+  const sentences = text.split(/\.(?=[A-ZÀ-Ý])|\.\s+|(?<=\))(?=[A-ZÀ-Ý])/).map((s) => s.trim()).filter(Boolean);
+  let first = sentences.find((s) => !/^(p[ée]riode|dates?|motif|horaires?|rendez-vous|pour plus)/i.test(s)) || sentences[0];
+  first = first.split(/\s*:\s*-\s*/)[0].replace(/\s*:\s*$/, '').trim();
+  let out = first.length > 230 ? `${first.slice(0, first.lastIndexOf(' ', 226))}…` : first;
+  if (motif && !norm(out).includes(norm(motif))) out += ` · Motif : ${motif.trim()}`;
+  return out;
+}
+
 class IdfmMetrocard extends HTMLElement {
   static getConfigElement() { return document.createElement(EDITOR_TAG); }
 
@@ -101,50 +98,68 @@ class IdfmMetrocard extends HTMLElement {
   }
 
   setConfig(config) {
-    if (!config || (!config.device && !config.entities)) {
-      throw new Error('idfm-metrocard : indique « device » (appareil IDFM) ou « entities ».');
+    const multi = Array.isArray(config && config.lines) && config.lines.length;
+    if (!config || (!multi && !config.device && !config.entities)) {
+      throw new Error('idfm-metrocard : indique « device » (appareil IDFM), « entities » ou « lines ».');
     }
-    this._config = Object.assign({ show_info: true, show_traffic: true, show_clock: true, mode: 'auto' }, config);
-    this._resolved = null;
+    this._config = Object.assign({
+      show_info: true, show_traffic: true, show_clock: true, show_status: true, show_ticker: true, mode: 'auto',
+    }, config);
+    this._resolved = {};
     if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
     this._sig = null;
     this._render();
   }
 
   set hass(hass) {
-    const first = !this._hass;
+    const n = Object.keys(hass.entities || {}).length;
+    if (!this._hass || n !== this._entityCount) this._resolved = {};
+    this._entityCount = n;
     this._hass = hass;
-    if (first || (this._resolved && this._resolved.entityCount !== Object.keys(hass.entities || {}).length)) this._resolved = null;
-    const sig = this._signature();
-    if (sig !== this._sig) { this._sig = sig; this._render(); }
+    this._refresh();
   }
 
   connectedCallback() {
     clearInterval(this._timer);
-    this._timer = setInterval(() => { this._sig = this._signature(); this._render(); }, 15000);
+    this._timer = setInterval(() => this._refresh(), 15000);
   }
 
   disconnectedCallback() { clearInterval(this._timer); }
 
+  _refresh() {
+    const sig = this._signature();
+    if (sig !== this._sig) { this._sig = sig; this._render(); }
+  }
+
   getCardSize() { return 4; }
   getGridOptions() { return { columns: 12, min_columns: 6, rows: 'auto' }; }
 
-  // Retrouve les capteurs d'horaires, le capteur trafic et les infos de ligne de l'appareil choisi.
-  _resolve() {
-    if (this._resolved) return this._resolved;
-    const c = this._config, h = this._hass;
-    const res = { timing: [], traffic: null, line: '', stop: '', direction: '', found: true, entityCount: Object.keys(h.entities || {}).length };
-    if (c.entities) {
-      res.timing = toList(c.entities);
+  // Lignes à afficher : la config elle-même, ou chaque entrée de « lines ».
+  _specs() {
+    const c = this._config;
+    const keys = ['mode', 'show_traffic', 'only_my_stop'];
+    if (Array.isArray(c.lines) && c.lines.length) {
+      return c.lines.map((l) => Object.assign(Object.fromEntries(keys.map((k) => [k, c[k]])), l));
+    }
+    return [c];
+  }
+
+  // Retrouve les capteurs d'horaires, le capteur trafic et les infos de ligne d'un appareil.
+  _resolve(spec, idx) {
+    if (this._resolved[idx]) return this._resolved[idx];
+    const h = this._hass;
+    const res = { timing: [], traffic: null, line: '', stop: '', direction: '', found: true };
+    if (spec.entities) {
+      res.timing = toList(spec.entities);
     } else {
-      const ents = Object.values(h.entities || {}).filter((e) => e.device_id === c.device && e.platform === 'idfm');
+      const ents = Object.values(h.entities || {}).filter((e) => e.device_id === spec.device && e.platform === 'idfm');
       if (!ents.length) res.found = false;
       for (const e of ents) {
         const st = h.states[e.entity_id];
         if (e.entity_id.startsWith('sensor.') && (!st || st.attributes.device_class === 'timestamp')) res.timing.push(e.entity_id);
         else if (e.entity_id.startsWith('binary_sensor.') && !res.traffic) res.traffic = e.entity_id;
       }
-      const dev = h.devices && h.devices[c.device];
+      const dev = h.devices && h.devices[spec.device];
       // Nom d'appareil de l'intégration : « C - Athis-Mons - Athis-Mons -> any »
       if (dev && dev.name) {
         const [left, dir] = dev.name.split(' -> ');
@@ -154,28 +169,30 @@ class IdfmMetrocard extends HTMLElement {
         res.direction = dir && dir !== 'any' ? dir : '';
       }
     }
-    if (c.traffic_entity) res.traffic = c.traffic_entity;
-    this._resolved = res;
+    if (spec.traffic_entity) res.traffic = spec.traffic_entity;
+    this._resolved[idx] = res;
     return res;
   }
 
   _signature() {
     if (!this._hass || !this._config) return '';
-    const r = this._resolve();
     let s = String(Math.floor(Date.now() / 60000));
-    for (const id of r.timing) {
-      const st = this._hass.states[id];
-      s += '|' + (st ? st.state + JSON.stringify(st.attributes) : '');
-    }
-    if (r.traffic) { const t = this._hass.states[r.traffic]; s += '|' + (t ? t.state : ''); }
+    this._specs().forEach((spec, i) => {
+      const r = this._resolve(spec, i);
+      for (const id of r.timing) {
+        const st = this._hass.states[id];
+        s += '|' + (st ? st.state + JSON.stringify(st.attributes) : '');
+      }
+      if (r.traffic) { const t = this._hass.states[r.traffic]; s += '|' + (t ? t.state + (t.attributes.description || '') : ''); }
+    });
     return s;
   }
 
-  _departures(r) {
-    const c = this._config, h = this._hass, out = [];
+  _departures(spec, r) {
+    const h = this._hass, out = [];
     let cancelled = 0;
-    const inc = toList(c.include_destinations).map(norm);
-    const exc = toList(c.exclude_destinations).map(norm);
+    const inc = toList(spec.include_destinations).map(norm);
+    const exc = toList(spec.exclude_destinations).map(norm);
     const now = Date.now();
     for (const id of r.timing) {
       const st = h.states[id];
@@ -196,6 +213,35 @@ class IdfmMetrocard extends HTMLElement {
     return { trains: out.slice(0, 2), cancelled };
   }
 
+  // État du trafic de la ligne : niveau (couleur), libellé court, résumé, fin prévue.
+  _status(spec, r, t) {
+    const ent = spec.show_traffic !== false && r.traffic ? this._hass.states[r.traffic] : null;
+    if (!ent || ent.state !== 'on') return { level: 'ok', label: t.status.ok, text: '' };
+    const a = ent.attributes || {};
+    const d = norm(a.description);
+    const effect = String(a.effect || '').toUpperCase();
+    const cause = norm(a.cause);
+    let level = 'warn', label = t.status.disrupted;
+    if (/greve|mouvement social/.test(d)) { level = 'bad'; label = t.status.strike; }
+    else if (effect === 'NO_SERVICE' || /interrompu/.test(d)) { level = 'bad'; label = t.status.stopped; }
+    else if (cause === 'travaux') { level = 'works'; label = t.status.works; }
+    else if (effect === 'REDUCED_SERVICE') label = t.status.reduced;
+    else if (effect === 'SIGNIFICANT_DELAYS') label = t.status.delays;
+    else if (['MODIFIED_SERVICE', 'DETOUR', 'STOP_MOVED'].includes(effect)) label = t.status.modified;
+    // Option : ne pas alarmer si le message ne cite ni l'arrêt ni les destinations suivies.
+    if (spec.only_my_stop) {
+      const keys = [r.stop, ...toList(spec.include_destinations)].map(norm).filter(Boolean);
+      if (keys.length && !keys.some((k) => d.includes(k))) { level = 'info'; label = t.status.elsewhere; }
+    }
+    let until = '';
+    const end = a.end_time ? new Date(a.end_time) : null;
+    if (end && !isNaN(end)) {
+      const sameDay = end.toDateString() === new Date().toDateString();
+      until = t.until(sameDay ? this._hhmm(end) : end.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }), sameDay);
+    }
+    return { level, label, text: summarize(a.description), until, entity: r.traffic };
+  }
+
   _hhmm(d) {
     const tz = this._hass?.config?.time_zone;
     try {
@@ -203,6 +249,29 @@ class IdfmMetrocard extends HTMLElement {
     } catch (e) {
       return d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
     }
+  }
+
+  _line(spec, r) {
+    const line = String(spec.line || r.line || '?');
+    const mode = spec.mode && spec.mode !== 'auto' ? spec.mode : guessMode(line);
+    const key = line.toUpperCase().replace(/BIS$/, 'B');
+    const color = validColor(spec.line_color) ? spec.line_color.trim()
+      : ((LINE_COLORS[mode] || {})[key] || DEFAULT_COLOR[mode] || '#9a9a9a');
+    const modeLabel = { metro: 'M', rer: 'RER', train: 'TRAIN', tram: 'T', bus: 'BUS' }[mode] || '';
+    return { line, mode, color, txt: textColorFor(color), modeLabel, shape: mode === 'metro' || mode === 'rer' ? '50%' : '6px' };
+  }
+
+  _badges(L, small) {
+    const s = small ? 28 : 34;
+    const modeFs = L.modeLabel.length > 3 ? 9 : L.modeLabel.length > 1 ? (small ? 9 : 11) : (small ? 15 : 18);
+    const lnFs = L.line.length > 2 ? (small ? 12 : 14) : (small ? 16 : 20);
+    return `${L.modeLabel ? `<div class="mode" style="min-width:${s}px;height:${s}px;font-size:${modeFs}px">${L.modeLabel}</div>` : ''}`
+      + `<div class="ln" style="min-width:${s}px;height:${s}px;font-size:${lnFs}px;background:${L.color};color:${L.txt};border-radius:${L.line.length > 2 ? `${s / 2}px` : L.shape}">${esc(L.line)}</div>`;
+  }
+
+  _pill(st) {
+    if (!this._config.show_status) return '';
+    return `<span class="pill" style="--lv:${LEVEL_COLORS[st.level]}"><i></i>${esc(st.label)}</span>`;
   }
 
   _slot(label, tr, t) {
@@ -215,110 +284,204 @@ class IdfmMetrocard extends HTMLElement {
     return `<div class="slot"><div class="lbl">${label}</div>${big}<div class="at">${this._hhmm(tr.t)}${late}</div></div>`;
   }
 
+  // Bandeau défilant façon panneau : messages des lignes perturbées.
+  _ticker(items) {
+    const msgs = items.filter((x) => x.st.level !== 'ok' && x.st.text);
+    if (!this._config.show_ticker || !msgs.length) return '';
+    const parts = msgs.map((x) => `<span class="tk-item"><b style="background:${x.L.color};color:${x.L.txt}">${esc(x.L.line)}</b>`
+      + `${x.st.until ? `<em>${esc(x.st.until)}</em> ` : ''}${esc(x.st.text)}</span>`).join('');
+    const len = msgs.reduce((n, x) => n + x.st.text.length + 20, 0);
+    const dur = Math.max(14, Math.round(len * 0.16));
+    const delay = -((Date.now() / 1000) % dur).toFixed(1); // reprend à la même position après un rafraîchissement
+    const ent = msgs[0].st.entity;
+    return `<div class="ticker" data-entity="${esc(ent || '')}"><div class="tk-run" style="animation-duration:${dur}s;animation-delay:${delay}s">${parts}</div></div>`;
+  }
+
   _message(text) {
     this.shadowRoot.innerHTML = `<style>ha-card{display:block;padding:16px}</style><ha-card>${esc(text)}</ha-card>`;
   }
 
   _render() {
     if (!this.shadowRoot || !this._config || !this._hass) return;
-    const c = this._config, t = I18N[lang(this._hass)];
-    const r = this._resolve();
-    if (!r.found) return this._message(t.noDevice);
-    if (!r.timing.length) return this._message(t.noSensor);
+    const t = I18N[lang(this._hass)];
+    const specs = this._specs();
+    const items = [];
+    for (let i = 0; i < specs.length; i++) {
+      const spec = specs[i], r = this._resolve(spec, i);
+      if (!r.found) return this._message(t.noDevice);
+      if (!r.timing.length) return this._message(t.noSensor);
+      items.push({ spec, r, L: this._line(spec, r), st: this._status(spec, r, t), ...this._departures(spec, r) });
+    }
+    const body = specs.length > 1 ? this._renderMulti(items, t) : this._renderSingle(items[0], t);
+    this.shadowRoot.innerHTML = `<style>${this._css()}</style><ha-card>${body}${this._ticker(items)}<div class="foot" style="background:${items[0].L.color}"></div></ha-card>`;
+    this.shadowRoot.querySelectorAll('[data-entity]').forEach((el) => {
+      const id = el.getAttribute('data-entity');
+      if (!id) return;
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: id }, bubbles: true, composed: true })));
+    });
+  }
 
-    const line = String(c.line || r.line || '?');
-    const mode = c.mode && c.mode !== 'auto' ? c.mode : guessMode(line);
-    const key = line.toUpperCase().replace(/BIS$/, 'B');
-    const color = validColor(c.line_color) ? c.line_color.trim()
-      : ((LINE_COLORS[mode] || {})[key] || DEFAULT_COLOR[mode] || '#9a9a9a');
-    const txtColor = textColorFor(color);
-    const title = c.title || r.direction || r.stop || line;
-    const subtitle = c.subtitle !== undefined ? c.subtitle : (r.stop && title !== r.stop ? `${t.from} ${r.stop}` : '');
-    const modeLabel = { metro: 'M', rer: 'RER', train: 'TRAIN', tram: 'T', bus: 'BUS' }[mode] || '';
-    const veh = t.vehicle[mode] || 'train';
-
-    const { trains, cancelled } = this._departures(r);
-    const tEnt = c.show_traffic && r.traffic ? this._hass.states[r.traffic] : null;
-    const perturbe = !!(tEnt && tEnt.state === 'on');
-
+  _renderSingle(it, t) {
+    const c = this._config, { spec, r, L, st, trains, cancelled } = it;
+    const title = spec.title || r.direction || r.stop || L.line;
+    const subtitle = spec.subtitle !== undefined ? spec.subtitle : (r.stop && title !== r.stop ? `${t.from} ${r.stop}` : '');
+    const veh = t.vehicle[L.mode] || 'train';
     let info = '';
     trains.forEach((tr, i) => { info += `<div class="dl"><b>${t.nth[i]}</b> ${esc(tr.dest)}</div>`; });
     if (!trains.length) info += `<div class="dl">${t.none}</div>`;
     if (cancelled) info += `<div class="warn">${t.cancelled(cancelled)}</div>`;
-    if (perturbe) info += `<div class="warn">${t.traffic}</div>`;
-    const shape = mode === 'metro' || mode === 'rer' ? '50%' : '6px';
+    if (!c.show_status && st.level !== 'ok') info += `<div class="warn">${t.traffic}</div>`;
+    return `
+      <div class="head">${this._badges(L)}
+        <div class="dest"><div class="d">${esc(title)}</div>${subtitle ? `<div class="o">${esc(subtitle)}</div>` : ''}</div>
+        <div class="hp" ${st.entity ? `data-entity="${esc(st.entity)}"` : ''}>${this._pill(st)}</div>
+      </div>
+      <div class="body ${c.show_info ? '' : 'noinfo'}">
+        ${this._slot(`${t.nth[0]} ${veh}`, trains[0], t)}
+        <div class="sep"></div>
+        ${this._slot(`${t.nth[1]} ${veh}`, trains[1], t)}
+        ${c.show_info ? `<div class="info"><span class="i">i</span>${c.show_clock ? `<span class="clk">${this._hhmm(new Date())}</span>` : ''}
+          <div class="txt2">${info}</div></div>` : ''}
+      </div>`;
+  }
 
-    this.shadowRoot.innerHTML = `
-      <style>
-        :host { display: block; }
-        ha-card { display: block; overflow: hidden; background: #1b1b1d; padding: 0; border: none;
-          border-radius: var(--ha-card-border-radius, 12px); container-type: inline-size; }
-        .head { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
-          background: linear-gradient(#f6f3f4, #e7e2e4); color: #1d1d1b; }
-        .mode { min-width: 34px; height: 34px; padding: 0 4px; border-radius: 17px; border: 2.5px solid #1d2f6b; color: #1d2f6b;
-          display: flex; align-items: center; justify-content: center; font: 800 ${modeLabel.length > 3 ? 9 : modeLabel.length > 1 ? 11 : 18}px/1 Roboto, Arial, sans-serif;
-          box-sizing: border-box; flex: none; }
-        .ln { min-width: 34px; height: 34px; padding: 0 6px; box-sizing: border-box; border-radius: ${line.length > 2 ? '17px' : shape};
-          background: ${color}; color: ${txtColor}; display: flex; align-items: center; justify-content: center;
-          font: 800 ${line.length > 2 ? 14 : 20}px/1 Roboto, Arial, sans-serif; flex: none; }
-        .dest { display: flex; flex-direction: column; min-width: 0; }
-        .dest .d { font: 700 22px/1.1 Roboto, Arial, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .dest .o { font: 500 12px/1.2 Roboto, Arial, sans-serif; color: #6b6467; }
-        .body { display: grid; grid-template-columns: ${c.show_info ? '1fr auto 1fr 1.25fr' : '1fr auto 1fr'}; align-items: stretch;
-          background: #0c0c0d; margin: 0 6px; padding: 10px 12px 12px 12px; gap: 0 10px; }
-        .slot { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
-        .lbl { color: #f2f2f2; font: 500 12px/1 Roboto, Arial, sans-serif; margin-bottom: 4px; }
-        .lbl sup, .dl sup { font-size: 8px; }
-        .num { color: #f7c11e; font: 700 56px/1 Roboto, "Arial Narrow", Arial, sans-serif;
-          font-variant-numeric: tabular-nums; letter-spacing: -1px; white-space: nowrap; }
-        .num .unit { font-size: 15px; font-weight: 600; margin-left: 3px; letter-spacing: 0; }
-        .num.txt { font-size: 24px; line-height: 56px; letter-spacing: 0; }
-        .num.none { color: #5a5a5a; }
-        .at { color: #cfcfcf; font: 500 14px/1.2 Roboto, Arial, sans-serif; margin-top: 4px; font-variant-numeric: tabular-nums; }
-        .late { color: #ff8a3d; font-weight: 700; }
-        .sep { width: 3px; background: #e9e9e9; border-radius: 2px; margin: 18px 0 22px; }
-        .info { background: #dceef9; color: #102a43; border-radius: 3px; padding: 8px 10px; position: relative;
-          font: 500 13px/1.3 Roboto, Arial, sans-serif; min-width: 0; cursor: ${perturbe ? 'pointer' : 'default'}; }
-        .info .i { display: inline-flex; width: 18px; height: 18px; border: 2px solid #102a43; border-radius: 2px;
-          align-items: center; justify-content: center; font: 800 12px/1 Georgia, serif; box-sizing: border-box; }
-        .info .clk { position: absolute; top: 6px; right: 6px; background: #2b2b2b; color: #f7c11e;
-          font: 700 12px/1 Roboto, Arial, sans-serif; padding: 3px 5px; border-radius: 2px; font-variant-numeric: tabular-nums; }
-        .info .txt2 { margin-top: 6px; }
-        .dl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .dl b { display: inline-block; min-width: 26px; }
-        .warn { margin-top: 4px; color: #b3261e; font-weight: 700; }
-        .foot { height: 8px; background: ${color}; margin-top: 6px; }
-        .blink { animation: blink 1.2s steps(2, start) infinite; }
-        @keyframes blink { to { visibility: hidden; } }
-        @container (max-width: 430px) {
-          .body { grid-template-columns: 1fr auto 1fr; gap: 10px 10px; }
-          .info { grid-column: 1 / -1; }
-          .num { font-size: 52px; }
-        }
-      </style>
-      <ha-card>
-        <div class="head">
-          ${modeLabel ? `<div class="mode">${modeLabel}</div>` : ''}<div class="ln">${esc(line)}</div>
-          <div class="dest"><div class="d">${esc(title)}</div>${subtitle ? `<div class="o">${esc(subtitle)}</div>` : ''}</div>
-        </div>
-        <div class="body">
-          ${this._slot(`${t.nth[0]} ${veh}`, trains[0], t)}
-          <div class="sep"></div>
-          ${this._slot(`${t.nth[1]} ${veh}`, trains[1], t)}
-          ${c.show_info ? `<div class="info" id="info">
-            <span class="i">i</span>${c.show_clock ? `<span class="clk">${this._hhmm(new Date())}</span>` : ''}
-            <div class="txt2">${info}</div></div>` : ''}
-        </div>
-        <div class="foot"></div>
-      </ha-card>`;
-    const infoEl = this.shadowRoot.getElementById('info');
-    if (perturbe && infoEl) {
-      infoEl.addEventListener('click', () => {
-        this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId: r.traffic }, bubbles: true, composed: true }));
-      });
-    }
+  _renderMulti(items, t) {
+    const c = this._config;
+    const rows = items.map(({ spec, r, L, st, trains }) => {
+      const title = spec.title || r.direction || r.stop || L.line;
+      const sub = spec.subtitle !== undefined ? spec.subtitle : (r.stop && title !== r.stop ? `${t.from} ${r.stop}` : '');
+      const cell = (tr) => {
+        if (!tr) return '<div class="mc"><div class="mn none">--</div><div class="mt">&nbsp;</div></div>';
+        const big = tr.atStop ? `<div class="mn txt blink">${t.atStop}</div>` : tr.m === 0 ? `<div class="mn txt blink">${t.soon}</div>`
+          : `<div class="mn">${tr.m}<span class="unit">${t.min}</span></div>`;
+        return `<div class="mc">${big}<div class="mt">${this._hhmm(tr.t)}${tr.status === 'delayed' ? ` <span class="late">${t.late}</span>` : ''}</div></div>`;
+      };
+      return `<div class="row">
+        <div class="rb">${this._badges(L, true)}</div>
+        <div class="rd"><div class="rt">${esc(title)}</div>${sub ? `<div class="rs">${esc(sub)}</div>` : ''}
+          <div ${st.entity ? `data-entity="${esc(st.entity)}"` : ''}>${this._pill(st)}</div></div>
+        ${cell(trains[0])}<div class="msep"></div>${cell(trains[1])}
+      </div>`;
+    }).join('');
+    return `<div class="head mhead"><div class="dest"><div class="d">${esc(c.title || t.next)}</div></div>
+      ${c.show_clock ? `<span class="hclk">${this._hhmm(new Date())}</span>` : ''}</div>
+      <div class="board">${rows}</div>`;
+  }
+
+  _css() {
+    return `
+      :host { display: block; }
+      ha-card { display: block; overflow: hidden; background: #1b1b1d; padding: 0; border: none;
+        border-radius: var(--ha-card-border-radius, 12px); container-type: inline-size; }
+      .head { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+        background: linear-gradient(#f6f3f4, #e7e2e4); color: #1d1d1b; }
+      .mode { padding: 0 4px; border-radius: 17px; border: 2.5px solid #1d2f6b; color: #1d2f6b;
+        display: flex; align-items: center; justify-content: center; font-weight: 800; font-family: Roboto, Arial, sans-serif;
+        line-height: 1; box-sizing: border-box; flex: none; }
+      .ln { padding: 0 6px; box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+        font-weight: 800; font-family: Roboto, Arial, sans-serif; line-height: 1; flex: none; }
+      .dest { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+      .dest .d { font: 700 22px/1.1 Roboto, Arial, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .dest .o { font: 500 12px/1.2 Roboto, Arial, sans-serif; color: #6b6467; }
+      .hp { flex: none; }
+      .pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px 3px 6px; border-radius: 999px;
+        background: color-mix(in srgb, var(--lv) 16%, white); color: color-mix(in srgb, var(--lv) 75%, black);
+        border: 1.5px solid var(--lv); font: 700 11px/1.1 Roboto, Arial, sans-serif; white-space: nowrap; }
+      .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--lv); }
+      .body { display: grid; grid-template-columns: 1fr auto 1fr 1.25fr; align-items: stretch;
+        background: #0c0c0d; margin: 0 6px; padding: 10px 12px 12px 12px; gap: 0 10px; }
+      .body.noinfo { grid-template-columns: 1fr auto 1fr; }
+      .slot { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+      .lbl { color: #f2f2f2; font: 500 12px/1 Roboto, Arial, sans-serif; margin-bottom: 4px; }
+      sup { font-size: 8px; }
+      .num { color: #f7c11e; font: 700 56px/1 Roboto, "Arial Narrow", Arial, sans-serif;
+        font-variant-numeric: tabular-nums; letter-spacing: -1px; white-space: nowrap; }
+      .unit { font-size: 15px; font-weight: 600; margin-left: 3px; letter-spacing: 0; }
+      .num.txt { font-size: 24px; line-height: 56px; letter-spacing: 0; }
+      .none { color: #5a5a5a !important; }
+      .at, .mt { color: #cfcfcf; font: 500 14px/1.2 Roboto, Arial, sans-serif; margin-top: 4px; font-variant-numeric: tabular-nums; }
+      .late { color: #ff8a3d; font-weight: 700; }
+      .sep { width: 3px; background: #e9e9e9; border-radius: 2px; margin: 18px 0 22px; }
+      .info { background: #dceef9; color: #102a43; border-radius: 3px; padding: 8px 10px; position: relative;
+        font: 500 13px/1.3 Roboto, Arial, sans-serif; min-width: 0; }
+      .info .i { display: inline-flex; width: 18px; height: 18px; border: 2px solid #102a43; border-radius: 2px;
+        align-items: center; justify-content: center; font: 800 12px/1 Georgia, serif; box-sizing: border-box; }
+      .clk, .hclk { background: #2b2b2b; color: #f7c11e; font: 700 12px/1 Roboto, Arial, sans-serif; padding: 3px 5px;
+        border-radius: 2px; font-variant-numeric: tabular-nums; }
+      .info .clk { position: absolute; top: 6px; right: 6px; }
+      .info .txt2 { margin-top: 6px; }
+      .dl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .dl b { display: inline-block; min-width: 26px; }
+      .warn { margin-top: 4px; color: #b3261e; font-weight: 700; }
+      .board { background: #0c0c0d; margin: 0 6px; padding: 2px 12px; }
+      .row { display: grid; grid-template-columns: auto 1fr auto auto auto; align-items: center; gap: 10px;
+        padding: 10px 0; border-bottom: 1px solid #2a2a2c; }
+      .row:last-child { border-bottom: none; }
+      .rb { display: flex; gap: 5px; }
+      .row .mode { border-color: #e9e9e9; color: #e9e9e9; }
+      .rd { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+      .rt { color: #f2f2f2; font: 700 16px/1.15 Roboto, Arial, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .rs { color: #9a9a9a; font: 500 11px/1.1 Roboto, Arial, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .rd .pill { font-size: 10px; padding: 2px 7px 2px 5px; }
+      .mc { text-align: right; min-width: 52px; }
+      .mn { color: #f7c11e; font: 700 34px/1 Roboto, Arial, sans-serif; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .mn .unit { font-size: 11px; }
+      .mn.txt { font-size: 15px; line-height: 34px; }
+      .mt { font-size: 12px; margin-top: 2px; }
+      .msep { width: 2px; align-self: stretch; background: #3a3a3c; margin: 6px 0; }
+      .ticker { margin: 0 6px; background: #0c0c0d; border-top: 1px solid #2a2a2c; overflow: hidden; height: 26px;
+        display: flex; align-items: center; }
+      .tk-run { display: inline-flex; gap: 48px; white-space: nowrap; padding-left: 100%;
+        color: #ffb000; font: 600 13px/26px "Courier New", ui-monospace, monospace; animation: tk linear infinite; }
+      .tk-item b { display: inline-block; min-width: 18px; padding: 0 5px; margin-right: 8px; border-radius: 4px;
+        font: 800 12px/18px Roboto, Arial, sans-serif; text-align: center; }
+      .tk-item em { font-style: normal; color: #fff; margin-right: 4px; }
+      @keyframes tk { from { transform: translateX(0); } to { transform: translateX(-100%); } }
+      .foot { height: 8px; margin-top: 6px; }
+      .blink { animation: blink 1.2s steps(2, start) infinite; }
+      @keyframes blink { to { visibility: hidden; } }
+      @container (max-width: 430px) {
+        .body { grid-template-columns: 1fr auto 1fr; gap: 10px 10px; }
+        .info { grid-column: 1 / -1; }
+        .num { font-size: 52px; }
+        .head .pill { font-size: 10px; }
+        .dest .d { font-size: 20px; }
+        .mn { font-size: 28px; }
+        .mc { min-width: 44px; }
+        .row { gap: 8px; }
+      }`;
   }
 }
+
+const EDITOR_LABELS = {
+  fr: {
+    device: 'Arrêt (appareil IDFM)', title: 'Titre (destination affichée)', subtitle: 'Sous-titre',
+    include_destinations: 'Garder seulement les départs vers…', exclude_destinations: 'Exclure les départs vers…',
+    mode: 'Type de ligne', line_color: 'Couleur de ligne (#RRVVBB)', show_info: 'Encart info',
+    show_traffic: 'Info trafic', show_clock: 'Horloge', show_status: 'Pastille d\'état', show_ticker: 'Bandeau défilant',
+    only_my_stop: 'Info trafic : seulement si mon arrêt est cité',
+  },
+  en: {
+    device: 'Stop (IDFM device)', title: 'Title (shown destination)', subtitle: 'Subtitle',
+    include_destinations: 'Only keep departures to…', exclude_destinations: 'Exclude departures to…',
+    mode: 'Line type', line_color: 'Line colour (#RRGGBB)', show_info: 'Info panel',
+    show_traffic: 'Traffic info', show_clock: 'Clock', show_status: 'Status pill', show_ticker: 'Scrolling banner',
+    only_my_stop: 'Traffic info: only when my stop is mentioned',
+  },
+};
+const EDITOR_HELPERS = {
+  fr: {
+    include_destinations: 'Un bout de nom suffit (ex. « Juvisy »). Vide = tous.',
+    exclude_destinations: 'Ex. les terminus de l\'autre sens.',
+    title: 'Vide = direction de l\'intégration ou nom de l\'arrêt.',
+  },
+  en: {
+    include_destinations: 'Part of a name is enough (e.g. “Juvisy”). Empty = all.',
+    exclude_destinations: 'E.g. the terminus stations of the other direction.',
+    title: 'Empty = integration direction or stop name.',
+  },
+};
 
 class IdfmMetrocardEditor extends HTMLElement {
   setConfig(config) { this._config = config; this._render(); }
@@ -347,17 +510,27 @@ class IdfmMetrocardEditor extends HTMLElement {
         { name: 'line_color', selector: { text: {} } },
       ] },
       { type: 'grid', name: '', schema: [
+        { name: 'show_status', selector: { boolean: {} } },
+        { name: 'show_ticker', selector: { boolean: {} } },
         { name: 'show_info', selector: { boolean: {} } },
-        { name: 'show_traffic', selector: { boolean: {} } },
         { name: 'show_clock', selector: { boolean: {} } },
+        { name: 'show_traffic', selector: { boolean: {} } },
       ] },
+      { name: 'only_my_stop', selector: { boolean: {} } },
     ];
   }
 
   _render() {
     if (!this._hass || !this._config) return;
     const l = lang(this._hass);
+    if (Array.isArray(this._config.lines)) {
+      // Le mode multi-lignes se règle en YAML.
+      this.innerHTML = `<p style="padding:8px">${l === 'fr' ? 'Carte multi-lignes : modifie-la dans l\'éditeur YAML.' : 'Multi-line card: edit it in the YAML editor.'}</p>`;
+      this._form = null;
+      return;
+    }
     if (!this._form) {
+      this.innerHTML = '';
       this._form = document.createElement('ha-form');
       this._form.computeLabel = (s) => EDITOR_LABELS[l][s.name] || s.name;
       this._form.computeHelper = (s) => EDITOR_HELPERS[l][s.name];
@@ -374,7 +547,9 @@ class IdfmMetrocardEditor extends HTMLElement {
     }
     this._form.hass = this._hass;
     this._form.schema = this._schema();
-    this._form.data = Object.assign({ mode: 'auto', show_info: true, show_traffic: true, show_clock: true }, this._config);
+    this._form.data = Object.assign({
+      mode: 'auto', show_info: true, show_traffic: true, show_clock: true, show_status: true, show_ticker: true, only_my_stop: false,
+    }, this._config);
   }
 }
 
