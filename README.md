@@ -110,6 +110,15 @@ Un appareil par gare (direction `any`), et le tri du sens se fait dans la carte 
 - Le **type de ligne** est deviné d'après son nom (A à E = RER, H/J/K/L/N/P/R/U = Transilien, T… = tram, 1 à 18 = métro, sinon bus). Force `mode` si ça se trompe (ex. un bus numéroté 8).
 - **Couleurs fournies** : métro, RER et Transilien. Pour les trams et les bus, règle `line_color`.
 
+## 🔀 Alternatives
+
+D'autres cartes affichent les prochains passages en Île-de-France, jette un œil pour choisir celle qui te va :
+
+- **[lovelace-idf-mobilite](https://github.com/yyrkoon94/lovelace-idf-mobilite)** (yyrkoon94) : la liste complète des départs façon panneau de station, mode écran TV, filtres par ligne, éditeur visuel. Elle utilise sa propre intégration (IDF Mobilité Assistant) ou des capteurs REST.
+- **[idfm-card](https://github.com/lesensei/idfm-card)** (lesensei) : une carte simple, l'une des premières sur le sujet.
+
+**Quand choisir IDFM Metrocard ?** Si tu utilises déjà l'intégration **[droso-hass/idfm](https://github.com/droso-hass/idfm)** (rien d'autre à installer ou à écrire en YAML), et si tu veux surtout **les 2 prochains départs dans ton sens**, en très gros, lisibles d'un coup d'œil.
+
 ## 🙏 Crédits
 
 - Données : **Île-de-France Mobilités** (API PRIM), via l'intégration [droso-hass/idfm](https://github.com/droso-hass/idfm).
@@ -148,5 +157,11 @@ exclude_destinations: [Juvisy, Brétigny, Dourdan, Étampes]
 ```
 
 Options: `device`* / `entities`, `title`, `subtitle`, `include_destinations`, `exclude_destinations`, `mode` (`auto`, `metro`, `rer`, `train`, `tram`, `bus`), `line`, `line_color`, `traffic_entity`, `show_info`, `show_traffic`, `show_clock` (see the table above). The card is in English when your Home Assistant is set to English.
+
+### Alternatives
+- **[lovelace-idf-mobilite](https://github.com/yyrkoon94/lovelace-idf-mobilite)** (yyrkoon94): full departure board, TV mode, line filters, visual editor; uses its own integration (IDF Mobilité Assistant) or REST sensors.
+- **[idfm-card](https://github.com/lesensei/idfm-card)** (lesensei): a simple card, one of the first on the topic.
+
+Pick IDFM Metrocard if you already use **droso-hass/idfm** (nothing else to install or write in YAML) and mostly want **your next 2 departures**, big and readable at a glance.
 
 Unofficial project, not affiliated with Île-de-France Mobilités, RATP or SNCF. Data: Île-de-France Mobilités (PRIM API). MIT licence.
