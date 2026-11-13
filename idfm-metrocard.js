@@ -4,7 +4,7 @@
  * (https://github.com/droso-hass/idfm).
  * Licence MIT.
  */
-const VERSION = '1.1.1';
+const VERSION = '1.2.0';
 const CARD_TAG = 'idfm-metrocard';
 const EDITOR_TAG = 'idfm-metrocard-editor';
 
@@ -37,6 +37,9 @@ const I18N = {
       modified: 'Trafic modifié', works: 'Travaux', disrupted: 'Perturbé', elsewhere: 'Info ligne',
     },
     until: (t, sameDay) => (sameDay ? `jusqu'à ${t}` : `jusqu'au ${t}`),
+    night: 'Fin de service', goodnight: 'Bonne nuit !',
+    asleep: { metro: 'Les métros dorment', rer: 'Les trains dorment', train: 'Les trains dorment', tram: 'Les trams dorment', bus: 'Les bus dorment' },
+    tomorrow: 'reprise demain matin',
   },
   en: {
     nth: ['1<sup>st</sup>', '2<sup>nd</sup>'],
@@ -50,6 +53,9 @@ const I18N = {
       modified: 'Modified service', works: 'Works', disrupted: 'Disrupted', elsewhere: 'Line info',
     },
     until: (t) => `until ${t}`,
+    night: 'End of service', goodnight: 'Good night!',
+    asleep: { metro: 'The metro is asleep', rer: 'Trains are asleep', train: 'Trains are asleep', tram: 'Trams are asleep', bus: 'Buses are asleep' },
+    tomorrow: 'back tomorrow morning',
   },
 };
 
@@ -89,6 +95,28 @@ function summarize(desc) {
   return out;
 }
 
+// Mode nuit : de 21 h à 7 h, s'il n'y a aucun départ annoncé et que le trafic n'est pas perturbé.
+// Les nuits de circulation exceptionnelle (fête de la musique, réveillon…), les départs
+// sont annoncés et la carte reste en affichage normal.
+const NIGHT_START = 21, NIGHT_END = 7;
+
+// Petit train vu de face qui dort (phares fermés) avec des « z » qui s'envolent.
+function sleepyTrain(color, size) {
+  return `<div class="zzt" style="width:${size}px;height:${Math.round(size * 1.12)}px">
+    <svg viewBox="0 0 64 72" aria-hidden="true">
+      <path d="M18 60 L10 71 M46 60 L54 71" stroke="#5a5a5a" stroke-width="3" stroke-linecap="round"/>
+      <rect x="8" y="6" width="48" height="54" rx="13" fill="#e9e9e9"/>
+      <rect x="22" y="9" width="20" height="5" rx="1.5" fill="#2b2b2b"/>
+      <rect x="14" y="17" width="36" height="17" rx="4" fill="#2b3440"/>
+      <path d="M18 20 L26 20 L20 30" fill="#ffffff" opacity=".12"/>
+      <rect x="8" y="37" width="48" height="6" fill="${color}"/>
+      <path d="M15 49 q5 4.5 10 0 M39 49 q5 4.5 10 0" stroke="#1d1d1b" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+      <rect x="13" y="55" width="38" height="4" rx="2" fill="#9a9a9a"/>
+    </svg>
+    <span class="z z1">z</span><span class="z z2">z</span><span class="z z3">Z</span>
+  </div>`;
+}
+
 class IdfmMetrocard extends HTMLElement {
   static getConfigElement() { return document.createElement(EDITOR_TAG); }
 
@@ -103,7 +131,7 @@ class IdfmMetrocard extends HTMLElement {
       throw new Error('idfm-metrocard : indique « device » (appareil IDFM), « entities » ou « lines ».');
     }
     this._config = Object.assign({
-      show_info: true, show_traffic: true, show_clock: true, show_status: true, show_ticker: true, mode: 'auto',
+      show_info: true, show_traffic: true, show_clock: true, show_status: true, show_ticker: true, night_mode: true, mode: 'auto',
     }, config);
     this._resolved = {};
     if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
@@ -251,6 +279,20 @@ class IdfmMetrocard extends HTMLElement {
     }
   }
 
+  _isNight() {
+    if (this._config.night_mode === false) return false;
+    let h;
+    try {
+      h = parseInt(new Intl.DateTimeFormat('fr-FR', { hour: 'numeric', hourCycle: 'h23', timeZone: this._hass?.config?.time_zone || undefined }).format(new Date()), 10);
+    } catch (e) { h = new Date().getHours(); }
+    return h >= NIGHT_START || h < NIGHT_END;
+  }
+
+  // La ligne « dort » : aucun départ, rien de supprimé, trafic normal, et c'est la nuit.
+  _asleep(it) {
+    return !it.trains.length && !it.cancelled && ['ok', 'info'].includes(it.st.level) && this._isNight();
+  }
+
   _line(spec, r) {
     const line = String(spec.line || r.line || '?');
     const mode = spec.mode && spec.mode !== 'auto' ? spec.mode : guessMode(line);
@@ -327,9 +369,10 @@ class IdfmMetrocard extends HTMLElement {
     const title = spec.title || r.direction || r.stop || L.line;
     const subtitle = spec.subtitle !== undefined ? spec.subtitle : (r.stop && title !== r.stop ? `${t.from} ${r.stop}` : '');
     const veh = t.vehicle[L.mode] || 'train';
+    const asleep = this._asleep(it);
     let info = '';
     trains.forEach((tr, i) => { info += `<div class="dl"><b>${t.nth[i]}</b> ${esc(tr.dest)}</div>`; });
-    if (!trains.length) info += `<div class="dl">${t.none}</div>`;
+    if (!trains.length) info += `<div class="dl">${asleep ? t.goodnight : t.none}</div>`;
     if (cancelled) info += `<div class="warn">${t.cancelled(cancelled)}</div>`;
     if (!c.show_status && st.level !== 'ok') info += `<div class="warn">${t.traffic}</div>`;
     return `
@@ -338,9 +381,11 @@ class IdfmMetrocard extends HTMLElement {
         <div class="hp" ${st.entity ? `data-entity="${esc(st.entity)}"` : ''}>${this._pill(st)}</div>
       </div>
       <div class="body ${c.show_info ? '' : 'noinfo'}">
-        ${this._slot(`${t.nth[0]} ${veh}`, trains[0], t)}
+        ${asleep ? `<div class="night">${sleepyTrain(L.color, 62)}<div class="nt"><div class="nb">${t.night}</div>
+          <div class="ns">${t.asleep[L.mode] || t.asleep.train}… ${t.tomorrow}</div></div></div>`
+        : `${this._slot(`${t.nth[0]} ${veh}`, trains[0], t)}
         <div class="sep"></div>
-        ${this._slot(`${t.nth[1]} ${veh}`, trains[1], t)}
+        ${this._slot(`${t.nth[1]} ${veh}`, trains[1], t)}`}
         ${c.show_info ? `<div class="info"><span class="i">i</span>${c.show_clock ? `<span class="clk">${this._hhmm(new Date())}</span>` : ''}
           <div class="txt2">${info}</div></div>` : ''}
       </div>`;
@@ -348,7 +393,8 @@ class IdfmMetrocard extends HTMLElement {
 
   _renderMulti(items, t) {
     const c = this._config;
-    const rows = items.map(({ spec, r, L, st, trains }) => {
+    const rows = items.map((it) => {
+      const { spec, r, L, st, trains } = it;
       const title = spec.title || r.direction || r.stop || L.line;
       const sub = spec.subtitle !== undefined ? spec.subtitle : (r.stop && title !== r.stop ? `${t.from} ${r.stop}` : '');
       const cell = (tr) => {
@@ -361,7 +407,8 @@ class IdfmMetrocard extends HTMLElement {
         <div class="rb">${this._badges(L, true)}</div>
         <div class="rd"><div class="rt">${esc(title)}</div>${sub ? `<div class="rs">${esc(sub)}</div>` : ''}
           <div ${st.entity ? `data-entity="${esc(st.entity)}"` : ''}>${this._pill(st)}</div></div>
-        ${cell(trains[0])}<div class="msep"></div>${cell(trains[1])}
+        ${this._asleep(it) ? `<div class="mz">${sleepyTrain(L.color, 30)}<span>${t.night}</span></div>`
+          : `${cell(trains[0])}<div class="msep"></div>${cell(trains[1])}`}
       </div>`;
     }).join('');
     return `<div class="head mhead"><div class="dest"><div class="d">${esc(c.title || t.next)}</div></div>
@@ -438,6 +485,23 @@ class IdfmMetrocard extends HTMLElement {
         font: 800 12px/18px Roboto, Arial, sans-serif; text-align: center; }
       .tk-item em { font-style: normal; color: #fff; margin-right: 4px; }
       @keyframes tk { from { transform: translateX(0); } to { transform: translateX(-100%); } }
+      .night { grid-column: 1 / 4; display: flex; align-items: center; gap: 26px; min-width: 0; padding: 4px 0; }
+      .nt { min-width: 0; }
+      .nb { color: #f7c11e; font: 700 26px/1.1 Roboto, Arial, sans-serif; }
+      .ns { color: #cfcfcf; font: 500 13px/1.3 Roboto, Arial, sans-serif; margin-top: 4px; }
+      .zzt { position: relative; flex: none; --zx: 14px; --zy: -20px; }
+      .zzt svg { width: 100%; height: 100%; display: block; animation: snore 4s ease-in-out infinite; transform-origin: 50% 100%; }
+      .z { position: absolute; left: 92%; top: 20%; color: #f7c11e; font: 800 14px/1 Roboto, Arial, sans-serif;
+        opacity: 0; animation: zfly 3.6s ease-out infinite; }
+      .z2 { animation-delay: 1.2s; font-size: 17px; }
+      .z3 { animation-delay: 2.4s; font-size: 21px; }
+      @keyframes zfly { 0% { opacity: 0; transform: translate(0, 10px) scale(.5); } 25% { opacity: 1; }
+        100% { opacity: 0; transform: translate(var(--zx), var(--zy)) scale(1.15); } }
+      @keyframes snore { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.02, .97); } }
+      .mz { grid-column: span 3; display: flex; align-items: center; justify-content: flex-end; gap: 16px;
+        color: #f7c11e; font: 700 14px/1 Roboto, Arial, sans-serif; white-space: nowrap; }
+      .mz .zzt { --zx: 8px; --zy: -11px; } .mz .zzt .z { font-size: 9px; } .mz .zzt .z2 { font-size: 11px; } .mz .zzt .z3 { font-size: 13px; }
+      @media (prefers-reduced-motion: reduce) { .zzt svg, .z { animation: none; } .z { opacity: 1; } .z1 { transform: translate(2px, 6px); } .z3 { transform: translate(12px, -14px); } }
       .foot { height: 8px; margin-top: 6px; }
       .blink { animation: blink 1.2s steps(2, start) infinite; }
       @keyframes blink { to { visibility: hidden; } }
@@ -461,6 +525,7 @@ const EDITOR_LABELS = {
     mode: 'Type de ligne', line_color: 'Couleur de ligne (#RRVVBB)', show_info: 'Encart info',
     show_traffic: 'Info trafic', show_clock: 'Horloge', show_status: 'Pastille d\'état', show_ticker: 'Bandeau défilant',
     only_my_stop: 'Info trafic : seulement si mon arrêt est cité',
+    night_mode: 'Mode nuit (train endormi quand il n\'y a plus de départ)',
   },
   en: {
     device: 'Stop (IDFM device)', title: 'Title (shown destination)', subtitle: 'Subtitle',
@@ -468,6 +533,7 @@ const EDITOR_LABELS = {
     mode: 'Line type', line_color: 'Line colour (#RRGGBB)', show_info: 'Info panel',
     show_traffic: 'Traffic info', show_clock: 'Clock', show_status: 'Status pill', show_ticker: 'Scrolling banner',
     only_my_stop: 'Traffic info: only when my stop is mentioned',
+    night_mode: 'Night mode (sleeping train when there are no more departures)',
   },
 };
 const EDITOR_HELPERS = {
@@ -517,6 +583,7 @@ class IdfmMetrocardEditor extends HTMLElement {
         { name: 'show_traffic', selector: { boolean: {} } },
       ] },
       { name: 'only_my_stop', selector: { boolean: {} } },
+      { name: 'night_mode', selector: { boolean: {} } },
     ];
   }
 
@@ -548,7 +615,7 @@ class IdfmMetrocardEditor extends HTMLElement {
     this._form.hass = this._hass;
     this._form.schema = this._schema();
     this._form.data = Object.assign({
-      mode: 'auto', show_info: true, show_traffic: true, show_clock: true, show_status: true, show_ticker: true, only_my_stop: false,
+      mode: 'auto', show_info: true, show_traffic: true, show_clock: true, show_status: true, show_ticker: true, only_my_stop: false, night_mode: true,
     }, this._config);
   }
 }

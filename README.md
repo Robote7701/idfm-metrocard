@@ -6,6 +6,8 @@ Carte Home Assistant façon **panneau de quai** qui affiche les 2 prochains pass
 
 ![Info trafic et plusieurs lignes (v1.1)](images/preview-v1.1.png)
 
+![Mode nuit (v1.2)](images/preview-nuit.png)
+
 > 🇬🇧 [English version below](#-english)
 
 ---
@@ -89,6 +91,7 @@ exclude_destinations:
 | `show_status` | booléen | `true` | Affiche la pastille d'état du trafic dans le bandeau. |
 | `show_ticker` | booléen | `true` | Affiche le bandeau défilant avec le message de perturbation. |
 | `only_my_stop` | booléen | `false` | Pastille grise « Info ligne » si le message ne cite ni ton arrêt ni tes `include_destinations` (voir Limites). |
+| `night_mode` | booléen | `true` | Mode nuit : un petit train endormi remplace les « -- » quand il n'y a plus de départ (voir plus bas). |
 | `lines` | liste | — | Plusieurs lignes dans une même carte (voir plus bas). |
 
 ### Exemple : les deux sens d'un trajet domicile ↔ travail
@@ -135,6 +138,7 @@ lines:
 - **Bandeau défilant** façon afficheur : le résumé du message de perturbation et sa fin prévue (« jusqu'à 23:50 »).
 - **Encart info** : horloge, destination des 2 départs, nombre de départs supprimés.
 - **Sur téléphone** (moins de 430 px de large), l'encart passe sous les chiffres.
+- **Mode nuit** 🌙 : entre 21 h et 7 h, quand aucun départ n'est annoncé et que le trafic n'est pas perturbé, la carte affiche « Fin de service » avec un petit train qui dort (et ses « zzz »). Ça se base sur les données, pas sur une grille d'horaires : les nuits où ça circule (fête de la musique, réveillon…), les départs s'affichent normalement. En cas de grève ou d'interruption, la carte garde l'affichage normal avec la pastille d'état. Désactivable avec `night_mode: false`.
 
 ## ⚠️ Limites
 
@@ -192,9 +196,11 @@ title: Paris · BFM
 exclude_destinations: [Juvisy, Brétigny, Dourdan, Étampes]
 ```
 
-Options: `device`* / `entities`, `title`, `subtitle`, `include_destinations`, `exclude_destinations`, `mode` (`auto`, `metro`, `rer`, `train`, `tram`, `bus`), `line`, `line_color`, `traffic_entity`, `show_info`, `show_traffic`, `show_clock`, `show_status`, `show_ticker`, `only_my_stop`, `lines` (see the table above). The card is in English when your Home Assistant is set to English.
+Options: `device`* / `entities`, `title`, `subtitle`, `include_destinations`, `exclude_destinations`, `mode` (`auto`, `metro`, `rer`, `train`, `tram`, `bus`), `line`, `line_color`, `traffic_entity`, `show_info`, `show_traffic`, `show_clock`, `show_status`, `show_ticker`, `only_my_stop`, `night_mode`, `lines` (see the table above). The card is in English when your Home Assistant is set to English.
 
 **Traffic status (v1.1):** a status pill (good service / works / delays / suspended / strike…) built from the traffic sensor's `effect`, `cause` and `description`, plus a scrolling banner with the disruption summary and its end time. Messages are line-wide, so a disruption far from your stop still shows; `only_my_stop` greys it out when your stop isn't mentioned (off by default, as it can miss stations between two named ones).
+
+**Night mode (v1.2):** between 9 pm and 7 am, when no departure is announced and service is not disrupted, the card shows “End of service” with a little sleeping train. It follows the data, not a timetable: on nights with service (Fête de la musique, New Year's Eve…) departures show as usual. Turn it off with `night_mode: false`.
 
 **Several lines in one card:** use `lines:` (YAML only), each entry taking the same options as a single card:
 
