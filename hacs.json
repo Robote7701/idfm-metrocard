@@ -1,5 +1,6 @@
 {
   "name": "IDFM Metrocard",
   "render_readme": true,
-  "filename": "idfm-metrocard.js"
+  "filename": "idfm-metrocard.js",
+  "country": ["FR"]
 }

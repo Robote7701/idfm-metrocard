@@ -38,6 +38,11 @@ L'intégration rafraîchit les horaires toutes les 3 minutes, et la carte recalc
 ## 📦 Installation
 
 ### Avec HACS (recommandé)
+Le plus simple : clique sur ce bouton, il ouvre directement la carte dans ta Home Assistant.
+
+[![Ouvrir dans le Marketplace / HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=robote7701&repository=idfm-metrocard&category=plugin)
+
+Sinon, à la main :
 1. HACS → menu **⋮** → **Dépôts personnalisés**.
 2. URL : `https://github.com/robote7701/idfm-metrocard`, catégorie **Dashboard** (ou *Lovelace*).
 3. Cherche **IDFM Metrocard** → **Télécharger**.
@@ -173,6 +178,8 @@ A Home Assistant card styled like a **Paris platform display**, showing the next
 Just pick the **device**: the card finds its sensors, the line and the stop name by itself.
 
 ### Install
+[![Ouvrir dans le Marketplace / HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=robote7701&repository=idfm-metrocard&category=plugin)
+
 HACS → **⋮** → Custom repositories → `https://github.com/robote7701/idfm-metrocard`, category **Dashboard** → download → hard refresh. Or copy `idfm-metrocard.js` to `/config/www/` and add `/local/idfm-metrocard.js` as a *JavaScript module* resource.
 
 ### Config
