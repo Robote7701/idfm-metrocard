@@ -4,7 +4,7 @@
  * (https://github.com/droso-hass/idfm).
  * Licence MIT.
  */
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const CARD_TAG = 'idfm-metrocard';
 const EDITOR_TAG = 'idfm-metrocard-editor';
 
